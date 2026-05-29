@@ -7,6 +7,7 @@ const DATE_COLUMN_INDEX = 7; // G (Дата создания)
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
 const PROFIT_SUMMARY_SHEET_NAME = 'Сводка причин отказа и прибыли';
 const MONTHLY_SUMMARY_SHEET_NAME = 'Сводка причин по месяцам';
+const CHARTS_SHEET_NAME = 'Графики причин отказа';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 
@@ -19,6 +20,8 @@ const STAGE_MARKERS = ['закрыто и не реализовано', 'зак�
  *   причина отказа | количество | недополученная прибыль | процент от общего числа сделок
  * - MONTHLY_SUMMARY_SHEET_NAME:
  *   отдельная таблица на каждую причину отказа с помесячными метриками
+ * - CHARTS_SHEET_NAME:
+ *   2 больших графика (количество и недополученная прибыль) по всем причинам
  */
 function buildRefusalReasonSummary() {
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -26,6 +29,7 @@ function buildRefusalReasonSummary() {
   const summarySheet = getOrCreateSheet_(spreadsheet, SUMMARY_SHEET_NAME);
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
   const monthlySummarySheet = getOrCreateSheet_(spreadsheet, MONTHLY_SUMMARY_SHEET_NAME);
+  const chartsSheet = getOrCreateSheet_(spreadsheet, CHARTS_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
   const summaryRows = [['причина отказа', 'количество', 'процент от общего числа сделок']];
@@ -57,8 +61,10 @@ function buildRefusalReasonSummary() {
     const monthlyRows = buildMonthlySummaryRows_(sortedStats, totalDealsByMonth);
     writeTable_(monthlySummarySheet, monthlyRows);
     applyMonthlySummaryFormats_(monthlySummarySheet, monthlyRows);
+    rebuildChartsSheet_(chartsSheet, sortedStats, totalDealsByMonth);
   } else {
     writeTable_(monthlySummarySheet, [['нет данных', '', '', '']]);
+    rebuildChartsSheet_(chartsSheet, [], {});
   }
 
   writeTable_(summarySheet, summaryRows);
@@ -212,6 +218,102 @@ function applyMonthlySummaryFormats_(sheet, rows) {
       sheet.getRange(index + 1, 1, 1, 4).setFontWeight('bold');
     }
   });
+}
+
+/**
+ * Rebuilds chart sheet with two large charts by refusal reason:
+ * count and lost profit by month.
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {Array<[string, {count:number, lostProfit:number, months:Object<string, {count:number, lostProfit:number}>}]>} sortedStats
+ * @param {Object<string, number>} totalDealsByMonth
+ */
+function rebuildChartsSheet_(sheet, sortedStats, totalDealsByMonth) {
+  sheet.clear();
+  sheet.getCharts().forEach((chart) => sheet.removeChart(chart));
+
+  const monthKeys = Object.keys(totalDealsByMonth).sort();
+  if (sortedStats.length === 0 || monthKeys.length === 0) {
+    sheet.getRange(1, 1).setValue('Нет данных для построения графиков');
+    return;
+  }
+
+  const reasons = sortedStats.map(([reason]) => reason);
+  const countTable = [['месяц'].concat(reasons)];
+  const profitTable = [['месяц'].concat(reasons)];
+
+  const statsByReason = {};
+  sortedStats.forEach(([reason, stats]) => {
+    statsByReason[reason] = stats;
+  });
+
+  monthKeys.forEach((monthKey) => {
+    const monthLabel = formatMonthKey_(monthKey);
+    const countRow = [monthLabel];
+    const profitRow = [monthLabel];
+
+    reasons.forEach((reason) => {
+      const monthStats = (statsByReason[reason].months || {})[monthKey] || {count: 0, lostProfit: 0};
+      countRow.push(monthStats.count);
+      profitRow.push(monthStats.lostProfit);
+    });
+
+    countTable.push(countRow);
+    profitTable.push(profitRow);
+  });
+
+  const tableStartColumn = 20; // T
+  const countRange = sheet.getRange(1, tableStartColumn, countTable.length, countTable[0].length);
+  const profitStartRow = countTable.length + 4;
+  const profitRange = sheet.getRange(profitStartRow, tableStartColumn, profitTable.length, profitTable[0].length);
+
+  countRange.setValues(countTable);
+  profitRange.setValues(profitTable);
+  countRange.getCell(1, 1).offset(0, 0, 1, countTable[0].length).setFontWeight('bold');
+  profitRange.getCell(1, 1).offset(0, 0, 1, profitTable[0].length).setFontWeight('bold');
+  sheet
+    .getRange(2, tableStartColumn + 1, Math.max(countTable.length - 1, 1), Math.max(countTable[0].length - 1, 1))
+    .setNumberFormat('0');
+  sheet
+    .getRange(
+      profitStartRow + 1,
+      tableStartColumn + 1,
+      Math.max(profitTable.length - 1, 1),
+      Math.max(profitTable[0].length - 1, 1),
+    )
+    .setNumberFormat('#,##0.00');
+
+  const countChart = sheet
+    .newChart()
+    .asLineChart()
+    .addRange(countRange)
+    .setNumHeaders(1)
+    .setPosition(1, 1, 0, 0)
+    .setOption('title', 'Количество сделок по причинам отказа')
+    .setOption('legend', {position: 'right'})
+    .setOption('hAxis', {title: 'Месяц'})
+    .setOption('vAxis', {title: 'Количество'})
+    .setOption('width', 1400)
+    .setOption('height', 520)
+    .setOption('chartArea', {left: 90, top: 50, width: '62%', height: '72%'})
+    .build();
+
+  const profitChart = sheet
+    .newChart()
+    .asLineChart()
+    .addRange(profitRange)
+    .setNumHeaders(1)
+    .setPosition(28, 1, 0, 0)
+    .setOption('title', 'Недополученная прибыль по причинам отказа')
+    .setOption('legend', {position: 'right'})
+    .setOption('hAxis', {title: 'Месяц'})
+    .setOption('vAxis', {title: 'Недополученная прибыль'})
+    .setOption('width', 1400)
+    .setOption('height', 520)
+    .setOption('chartArea', {left: 90, top: 50, width: '62%', height: '72%'})
+    .build();
+
+  sheet.insertChart(countChart);
+  sheet.insertChart(profitChart);
 }
 
 /**
@@ -382,7 +484,8 @@ function getSourceSheet_(spreadsheet) {
       (sheet) =>
         sheet.getName() !== SUMMARY_SHEET_NAME &&
         sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME &&
-        sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME,
+        sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME &&
+        sheet.getName() !== CHARTS_SHEET_NAME,
     );
 
   const byHeader = sheets.find((sheet) => {
