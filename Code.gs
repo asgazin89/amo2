@@ -1,5 +1,6 @@
 const SPREADSHEET_ID = '1_G3iskoNiluovIPPW8X4QzK0GnT_F9TQLbdQjHJBATQ';
 const SOURCE_SHEET_NAME = '';
+const ID_COLUMN_INDEX = 1; // A
 const SOURCE_COLUMN_INDEX = 5; // E
 const BUDGET_COLUMN_INDEX = 6; // F
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
@@ -11,8 +12,9 @@ const STAGE_MARKERS = ['закрыто и не реализовано', 'зак�
  * Builds a summary table of refusal reasons for closed-unrealized deals.
  * Source data is read from column E in detected source sheet.
  * Result is written to:
- * - SUMMARY_SHEET_NAME: причина отказа | количество
- * - PROFIT_SUMMARY_SHEET_NAME: причина отказа | количество | недополученная прибыль
+ * - SUMMARY_SHEET_NAME: причина отказа | количество | процент от общего числа сделок
+ * - PROFIT_SUMMARY_SHEET_NAME:
+ *   причина отказа | количество | недополученная прибыль | процент от общего числа сделок
  */
 function buildRefusalReasonSummary() {
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -21,14 +23,17 @@ function buildRefusalReasonSummary() {
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
-  const summaryRows = [['причина отказа', 'количество']];
-  const profitSummaryRows = [['причина отказа', 'количество', 'недополученная прибыль']];
+  const summaryRows = [['причина отказа', 'количество', 'процент от общего числа сделок']];
+  const profitSummaryRows = [
+    ['причина отказа', 'количество', 'недополученная прибыль', 'процент от общего числа сделок'],
+  ];
 
   if (lastRow > 1) {
     const sourceRows = sourceSheet
-      .getRange(2, SOURCE_COLUMN_INDEX, lastRow - 1, BUDGET_COLUMN_INDEX - SOURCE_COLUMN_INDEX + 1)
+      .getRange(2, ID_COLUMN_INDEX, lastRow - 1, BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX + 1)
       .getValues();
 
+    const totalDeals = countDealsById_(sourceRows);
     const reasonStats = collectReasonStats_(sourceRows);
     const sortedStats = Object.entries(reasonStats).sort(
       (a, b) =>
@@ -38,33 +43,36 @@ function buildRefusalReasonSummary() {
     );
 
     sortedStats.forEach(([reason, stats]) => {
-      summaryRows.push([reason, stats.count]);
-      profitSummaryRows.push([reason, stats.count, stats.lostProfit]);
+      const dealShare = totalDeals > 0 ? stats.count / totalDeals : 0;
+      summaryRows.push([reason, stats.count, dealShare]);
+      profitSummaryRows.push([reason, stats.count, stats.lostProfit, dealShare]);
     });
   }
 
   writeTable_(summarySheet, summaryRows);
   writeTable_(profitSummarySheet, profitSummaryRows);
+  summarySheet.getRange(2, 3, Math.max(summaryRows.length - 1, 1), 1).setNumberFormat('0.00%');
   profitSummarySheet.getRange(2, 3, Math.max(profitSummaryRows.length - 1, 1), 1).setNumberFormat('#,##0.00');
+  profitSummarySheet.getRange(2, 4, Math.max(profitSummaryRows.length - 1, 1), 1).setNumberFormat('0.00%');
 }
 
 /**
  * Collects per-reason count and budget sum for closed-unrealized deals.
- * @param {Array<Array<*>>} sourceRows
+ * @param {Array<Array<*>>} sourceRows rows from columns A:F
  * @return {Object<string, {count:number, lostProfit:number}>}
  */
 function collectReasonStats_(sourceRows) {
   const statsByReason = {};
 
   sourceRows.forEach((row) => {
-    const stageValue = String(row[0] || '').trim();
+    const stageValue = String(row[SOURCE_COLUMN_INDEX - ID_COLUMN_INDEX] || '').trim();
     const normalized = normalizeText_(stageValue);
     if (!isClosedUnrealizedStage_(normalized)) {
       return;
     }
 
     const reason = extractReason_(stageValue);
-    const budget = parseBudget_(row[1]);
+    const budget = parseBudget_(row[BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX]);
     if (!statsByReason[reason]) {
       statsByReason[reason] = {count: 0, lostProfit: 0};
     }
@@ -74,6 +82,22 @@ function collectReasonStats_(sourceRows) {
   });
 
   return statsByReason;
+}
+
+/**
+ * Counts total number of deals by non-empty ID in column A.
+ * @param {Array<Array<*>>} sourceRows rows from columns A:F
+ * @return {number}
+ */
+function countDealsById_(sourceRows) {
+  return sourceRows.filter((row) => {
+    const idValue = row[0];
+    if (typeof idValue === 'number') {
+      return Number.isFinite(idValue);
+    }
+
+    return String(idValue || '').trim() !== '';
+  }).length;
 }
 
 /**
