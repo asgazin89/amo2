@@ -3,7 +3,7 @@ const SOURCE_SHEET_NAME = '';
 const SOURCE_COLUMN_INDEX = 5; // E
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
 const EMPTY_REASON_LABEL = 'причина не указана';
-const STAGE_MARKER = 'закрыто и нереализовано';
+const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 
 /**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
@@ -48,8 +48,8 @@ function countReasons_(stageValues) {
   const counts = {};
 
   stageValues.forEach((value) => {
-    const normalized = value.toLowerCase();
-    if (!normalized.includes(STAGE_MARKER)) {
+    const normalized = normalizeText_(value);
+    if (!isClosedUnrealizedStage_(normalized)) {
       return;
     }
 
@@ -58,6 +58,28 @@ function countReasons_(stageValues) {
   });
 
   return counts;
+}
+
+/**
+ * Checks whether stage value is "closed and unrealized".
+ * Supports both variants: "не реализовано" and "нереализовано".
+ * @param {string} normalizedValue
+ * @return {boolean}
+ */
+function isClosedUnrealizedStage_(normalizedValue) {
+  return STAGE_MARKERS.some((marker) => normalizedValue.includes(marker));
+}
+
+/**
+ * Normalizes text for stable matching.
+ * @param {string} value
+ * @return {string}
+ */
+function normalizeText_(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
