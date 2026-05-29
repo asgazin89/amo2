@@ -7,8 +7,10 @@ const DATE_COLUMN_INDEX = 7; // G (Дата создания)
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
 const PROFIT_SUMMARY_SHEET_NAME = 'Сводка причин отказа и прибыли';
 const MONTHLY_SUMMARY_SHEET_NAME = 'Сводка причин по месяцам';
+const SUCCESS_SUMMARY_SHEET_NAME = 'Сводка успешных сделок';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
+const SUCCESS_STATUS_ORDER = ['успешно реализовано', 'отправка', 'закрытие договора'];
 
 /**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
@@ -27,18 +29,21 @@ function buildRefusalReasonSummary() {
   const summarySheet = getOrCreateSheet_(spreadsheet, SUMMARY_SHEET_NAME);
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
   const monthlySummarySheet = getOrCreateSheet_(spreadsheet, MONTHLY_SUMMARY_SHEET_NAME);
+  const successSummarySheet = getOrCreateSheet_(spreadsheet, SUCCESS_SUMMARY_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
+  const sourceRows =
+    lastRow > 1
+      ? sourceSheet
+          .getRange(2, ID_COLUMN_INDEX, lastRow - 1, DATE_COLUMN_INDEX - ID_COLUMN_INDEX + 1)
+          .getValues()
+      : [];
   const summaryRows = [['причина отказа', 'количество', 'процент от общего числа сделок']];
   const profitSummaryRows = [
     ['причина отказа', 'количество', 'недополученная прибыль', 'процент от общего числа сделок'],
   ];
 
-  if (lastRow > 1) {
-    const sourceRows = sourceSheet
-      .getRange(2, ID_COLUMN_INDEX, lastRow - 1, DATE_COLUMN_INDEX - ID_COLUMN_INDEX + 1)
-      .getValues();
-
+  if (sourceRows.length > 0) {
     const totalDeals = countDealsById_(sourceRows);
     const totalDealsByMonth = countDealsByMonth_(sourceRows);
     const reasonStats = collectReasonStats_(sourceRows);
@@ -63,6 +68,12 @@ function buildRefusalReasonSummary() {
     writeTable_(monthlySummarySheet, [['нет данных', '', '', '']]);
     rebuildChartsOnMonthlySheet_(monthlySummarySheet, [], {}, 1);
   }
+
+  const successRows = buildSuccessfulSummaryRows_(sourceRows);
+  writeTable_(successSummarySheet, successRows);
+  successSummarySheet
+    .getRange(2, 3, Math.max(successRows.length - 1, 1), 1)
+    .setNumberFormat('#,##0.00');
 
   writeTable_(summarySheet, summaryRows);
   writeTable_(profitSummarySheet, profitSummaryRows);
@@ -314,6 +325,66 @@ function rebuildChartsOnMonthlySheet_(sheet, sortedStats, totalDealsByMonth, mon
 }
 
 /**
+ * Builds summary rows for successful deal statuses.
+ * @param {Array<Array<*>>} sourceRows rows from columns A:G
+ * @return {Array<Array<*>>}
+ */
+function buildSuccessfulSummaryRows_(sourceRows) {
+  const statsByStatus = {};
+  SUCCESS_STATUS_ORDER.forEach((status) => {
+    statsByStatus[status] = {count: 0, budget: 0};
+  });
+
+  sourceRows.forEach((row) => {
+    const stageValue = normalizeSuccessfulStatus_(row[SOURCE_COLUMN_INDEX - ID_COLUMN_INDEX]);
+    const statusKey = resolveSuccessfulStatusKey_(stageValue);
+    if (!statusKey) {
+      return;
+    }
+
+    statsByStatus[statusKey].count += 1;
+    statsByStatus[statusKey].budget += parseBudget_(row[BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX]);
+  });
+
+  const rows = [['статус', 'количество сделок', 'общая сумма бюджета']];
+  SUCCESS_STATUS_ORDER.forEach((statusKey) => {
+    rows.push([statusKey, statsByStatus[statusKey].count, statsByStatus[statusKey].budget]);
+  });
+
+  return rows;
+}
+
+/**
+ * Normalizes successful status value for matching.
+ * @param {*} value
+ * @return {string}
+ */
+function normalizeSuccessfulStatus_(value) {
+  return normalizeText_(value).replace('реализованно', 'реализовано');
+}
+
+/**
+ * Maps normalized stage to one of supported successful statuses.
+ * @param {string} normalizedStage
+ * @return {string}
+ */
+function resolveSuccessfulStatusKey_(normalizedStage) {
+  if (normalizedStage === 'успешно реализовано') {
+    return 'успешно реализовано';
+  }
+
+  if (normalizedStage === 'отправка') {
+    return 'отправка';
+  }
+
+  if (normalizedStage === 'закрытие договора') {
+    return 'закрытие договора';
+  }
+
+  return '';
+}
+
+/**
  * Parses month key (YYYY-MM) from date value.
  * Supports Date object and string like "dd.mm.yyyy hh:mm:ss".
  * @param {*} value
@@ -481,7 +552,8 @@ function getSourceSheet_(spreadsheet) {
       (sheet) =>
         sheet.getName() !== SUMMARY_SHEET_NAME &&
         sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME &&
-        sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME,
+        sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME &&
+        sheet.getName() !== SUCCESS_SUMMARY_SHEET_NAME,
     );
 
   const byHeader = sheets.find((sheet) => {
