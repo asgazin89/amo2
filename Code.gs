@@ -74,6 +74,12 @@ function buildRefusalReasonSummary() {
   successSummarySheet
     .getRange(2, 3, Math.max(successRows.length - 1, 1), 1)
     .setNumberFormat('#,##0.00');
+  successSummarySheet
+    .getRange(2, 4, Math.max(successRows.length - 1, 1), 1)
+    .setNumberFormat('0.00%');
+  successSummarySheet
+    .getRange(successRows.length, 1, 1, successRows[0].length)
+    .setFontWeight('bold');
 
   writeTable_(summarySheet, summaryRows);
   writeTable_(profitSummarySheet, profitSummaryRows);
@@ -346,10 +352,25 @@ function buildSuccessfulSummaryRows_(sourceRows) {
     statsByStatus[statusKey].budget += parseBudget_(row[BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX]);
   });
 
-  const rows = [['статус', 'количество сделок', 'общая сумма бюджета']];
+  const totalDeals = countDealsById_(sourceRows);
+  let successfulDealsTotal = 0;
+  let successfulBudgetTotal = 0;
+  const rows = [['статус', 'количество сделок', 'общая сумма бюджета', 'процент от общего числа сделок']];
   SUCCESS_STATUS_ORDER.forEach((statusKey) => {
-    rows.push([statusKey, statsByStatus[statusKey].count, statsByStatus[statusKey].budget]);
+    const statusCount = statsByStatus[statusKey].count;
+    const statusBudget = statsByStatus[statusKey].budget;
+    const statusShare = totalDeals > 0 ? statusCount / totalDeals : 0;
+
+    rows.push([statusKey, statusCount, statusBudget, statusShare]);
+    successfulDealsTotal += statusCount;
+    successfulBudgetTotal += statusBudget;
   });
+  rows.push([
+    'итого успешные сделки (конверсия из лида)',
+    successfulDealsTotal,
+    successfulBudgetTotal,
+    totalDeals > 0 ? successfulDealsTotal / totalDeals : 0,
+  ]);
 
   return rows;
 }
