@@ -1,63 +1,79 @@
 const SPREADSHEET_ID = '1_G3iskoNiluovIPPW8X4QzK0GnT_F9TQLbdQjHJBATQ';
 const SOURCE_SHEET_NAME = '';
 const SOURCE_COLUMN_INDEX = 5; // E
+const BUDGET_COLUMN_INDEX = 6; // F
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
+const PROFIT_SUMMARY_SHEET_NAME = 'Сводка причин отказа и прибыли';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 
 /**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
  * Source data is read from column E in detected source sheet.
- * Result is written to SUMMARY_SHEET_NAME as:
- *   причина отказа | количество
+ * Result is written to:
+ * - SUMMARY_SHEET_NAME: причина отказа | количество
+ * - PROFIT_SUMMARY_SHEET_NAME: причина отказа | количество | недополученная прибыль
  */
 function buildRefusalReasonSummary() {
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sourceSheet = getSourceSheet_(spreadsheet);
   const summarySheet = getOrCreateSheet_(spreadsheet, SUMMARY_SHEET_NAME);
+  const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
   const summaryRows = [['причина отказа', 'количество']];
+  const profitSummaryRows = [['причина отказа', 'количество', 'недополученная прибыль']];
 
   if (lastRow > 1) {
-    const stageValues = sourceSheet
-      .getRange(2, SOURCE_COLUMN_INDEX, lastRow - 1, 1)
-      .getDisplayValues()
-      .map((row) => String(row[0] || '').trim());
+    const sourceRows = sourceSheet
+      .getRange(2, SOURCE_COLUMN_INDEX, lastRow - 1, BUDGET_COLUMN_INDEX - SOURCE_COLUMN_INDEX + 1)
+      .getValues();
 
-    const reasonCounts = countReasons_(stageValues);
-    Object.entries(reasonCounts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'))
-      .forEach(([reason, count]) => summaryRows.push([reason, count]));
+    const reasonStats = collectReasonStats_(sourceRows);
+    const sortedStats = Object.entries(reasonStats).sort(
+      (a, b) =>
+        b[1].count - a[1].count ||
+        b[1].lostProfit - a[1].lostProfit ||
+        a[0].localeCompare(b[0], 'ru'),
+    );
+
+    sortedStats.forEach(([reason, stats]) => {
+      summaryRows.push([reason, stats.count]);
+      profitSummaryRows.push([reason, stats.count, stats.lostProfit]);
+    });
   }
 
-  summarySheet.clearContents();
-  summarySheet
-    .getRange(1, 1, summaryRows.length, summaryRows[0].length)
-    .setValues(summaryRows);
-  summarySheet.getRange(1, 1, 1, 2).setFontWeight('bold');
-  summarySheet.autoResizeColumns(1, 2);
+  writeTable_(summarySheet, summaryRows);
+  writeTable_(profitSummarySheet, profitSummaryRows);
+  profitSummarySheet.getRange(2, 3, Math.max(profitSummaryRows.length - 1, 1), 1).setNumberFormat('#,##0.00');
 }
 
 /**
- * Counts refusal reasons for values that include STAGE_MARKER.
- * @param {string[]} stageValues
- * @return {Object<string, number>}
+ * Collects per-reason count and budget sum for closed-unrealized deals.
+ * @param {Array<Array<*>>} sourceRows
+ * @return {Object<string, {count:number, lostProfit:number}>}
  */
-function countReasons_(stageValues) {
-  const counts = {};
+function collectReasonStats_(sourceRows) {
+  const statsByReason = {};
 
-  stageValues.forEach((value) => {
-    const normalized = normalizeText_(value);
+  sourceRows.forEach((row) => {
+    const stageValue = String(row[0] || '').trim();
+    const normalized = normalizeText_(stageValue);
     if (!isClosedUnrealizedStage_(normalized)) {
       return;
     }
 
-    const reason = extractReason_(value);
-    counts[reason] = (counts[reason] || 0) + 1;
+    const reason = extractReason_(stageValue);
+    const budget = parseBudget_(row[1]);
+    if (!statsByReason[reason]) {
+      statsByReason[reason] = {count: 0, lostProfit: 0};
+    }
+
+    statsByReason[reason].count += 1;
+    statsByReason[reason].lostProfit += budget;
   });
 
-  return counts;
+  return statsByReason;
 }
 
 /**
@@ -80,6 +96,24 @@ function normalizeText_(value) {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Parses budget value from sheet cell.
+ * Empty or invalid values are treated as zero.
+ * @param {*} value
+ * @return {number}
+ */
+function parseBudget_(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  const normalized = String(value || '')
+    .replace(/\s+/g, '')
+    .replace(',', '.');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /**
@@ -113,6 +147,18 @@ function getOrCreateSheet_(spreadsheet, sheetName) {
 }
 
 /**
+ * Clears and writes a 2D table to sheet with bold header and autoresize.
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {Array<Array<*>>} rows
+ */
+function writeTable_(sheet, rows) {
+  sheet.clearContents();
+  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+  sheet.getRange(1, 1, 1, rows[0].length).setFontWeight('bold');
+  sheet.autoResizeColumns(1, rows[0].length);
+}
+
+/**
  * Resolves source sheet:
  * 1) by SOURCE_SHEET_NAME (if specified),
  * 2) by header in E1 containing "этап",
@@ -132,7 +178,10 @@ function getSourceSheet_(spreadsheet) {
 
   const sheets = spreadsheet
     .getSheets()
-    .filter((sheet) => sheet.getName() !== SUMMARY_SHEET_NAME);
+    .filter(
+      (sheet) =>
+        sheet.getName() !== SUMMARY_SHEET_NAME && sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME,
+    );
 
   const byHeader = sheets.find((sheet) => {
     const headerValue = String(sheet.getRange(1, SOURCE_COLUMN_INDEX).getDisplayValue() || '')
