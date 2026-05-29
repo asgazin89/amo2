@@ -1,6 +1,8 @@
 const SPREADSHEET_ID = '1_G3iskoNiluovIPPW8X4QzK0GnT_F9TQLbdQjHJBATQ';
 const SOURCE_SHEET_NAME = '';
 const ID_COLUMN_INDEX = 1; // A
+const DEAL_NAME_COLUMN_INDEX = 2; // B
+const COMPANY_COLUMN_INDEX = 3; // C
 const SOURCE_COLUMN_INDEX = 5; // E
 const BUDGET_COLUMN_INDEX = 6; // F
 const DATE_COLUMN_INDEX = 7; // G (Дата создания)
@@ -8,6 +10,9 @@ const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
 const PROFIT_SUMMARY_SHEET_NAME = 'Сводка причин отказа и прибыли';
 const MONTHLY_SUMMARY_SHEET_NAME = 'Сводка причин по месяцам';
 const SUCCESS_SUMMARY_SHEET_NAME = 'Сводка успешных сделок';
+const SUCCESS_COMPANY_BUDGET_SHEET_NAME = 'Успешные сделки по компаниям (сумма)';
+const SUCCESS_COMPANY_COUNT_SHEET_NAME = 'Успешные сделки по компаниям (количество)';
+const EMPTY_COMPANY_LABEL = 'компания не указана';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 const SUCCESS_STATUS_ORDER = ['успешно реализовано', 'отправка', 'закрытие договора'];
@@ -30,6 +35,8 @@ function buildRefusalReasonSummary() {
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
   const monthlySummarySheet = getOrCreateSheet_(spreadsheet, MONTHLY_SUMMARY_SHEET_NAME);
   const successSummarySheet = getOrCreateSheet_(spreadsheet, SUCCESS_SUMMARY_SHEET_NAME);
+  const successCompanyBudgetSheet = getOrCreateSheet_(spreadsheet, SUCCESS_COMPANY_BUDGET_SHEET_NAME);
+  const successCompanyCountSheet = getOrCreateSheet_(spreadsheet, SUCCESS_COMPANY_COUNT_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
   const sourceRows =
@@ -80,6 +87,18 @@ function buildRefusalReasonSummary() {
   successSummarySheet
     .getRange(successRows.length, 1, 1, successRows[0].length)
     .setFontWeight('bold');
+
+  const companySuccessStats = collectSuccessfulCompanyStats_(sourceRows);
+  const companyBudgetRows = buildCompanySuccessfulRows_(companySuccessStats, 'budget');
+  const companyCountRows = buildCompanySuccessfulRows_(companySuccessStats, 'count');
+  writeTable_(successCompanyBudgetSheet, companyBudgetRows);
+  writeTable_(successCompanyCountSheet, companyCountRows);
+  successCompanyBudgetSheet
+    .getRange(2, 2, Math.max(companyBudgetRows.length - 1, 1), 4)
+    .setNumberFormat('#,##0.00');
+  successCompanyCountSheet
+    .getRange(2, 2, Math.max(companyCountRows.length - 1, 1), 4)
+    .setNumberFormat('0');
 
   writeTable_(summarySheet, summaryRows);
   writeTable_(profitSummarySheet, profitSummaryRows);
@@ -376,6 +395,111 @@ function buildSuccessfulSummaryRows_(sourceRows) {
 }
 
 /**
+ * Collects successful-deal stats by company and status.
+ * @param {Array<Array<*>>} sourceRows rows from columns A:G
+ * @return {Object<string, {statusBudgets:Object<string, number>, statusCounts:Object<string, number>, totalBudget:number, totalCount:number}>}
+ */
+function collectSuccessfulCompanyStats_(sourceRows) {
+  const statsByCompany = {};
+
+  sourceRows.forEach((row) => {
+    const stageValue = normalizeSuccessfulStatus_(row[SOURCE_COLUMN_INDEX - ID_COLUMN_INDEX]);
+    const statusKey = resolveSuccessfulStatusKey_(stageValue);
+    if (!statusKey) {
+      return;
+    }
+
+    const companyName = resolveCompanyName_(
+      row[COMPANY_COLUMN_INDEX - ID_COLUMN_INDEX],
+      row[DEAL_NAME_COLUMN_INDEX - ID_COLUMN_INDEX],
+    );
+    const budget = parseBudget_(row[BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX]);
+    if (!statsByCompany[companyName]) {
+      statsByCompany[companyName] = {
+        statusBudgets: {},
+        statusCounts: {},
+        totalBudget: 0,
+        totalCount: 0,
+      };
+      SUCCESS_STATUS_ORDER.forEach((status) => {
+        statsByCompany[companyName].statusBudgets[status] = 0;
+        statsByCompany[companyName].statusCounts[status] = 0;
+      });
+    }
+
+    statsByCompany[companyName].statusBudgets[statusKey] += budget;
+    statsByCompany[companyName].statusCounts[statusKey] += 1;
+    statsByCompany[companyName].totalBudget += budget;
+    statsByCompany[companyName].totalCount += 1;
+  });
+
+  return statsByCompany;
+}
+
+/**
+ * Builds successful-deal company table rows for budget or count metric.
+ * @param {Object<string, {statusBudgets:Object<string, number>, statusCounts:Object<string, number>, totalBudget:number, totalCount:number}>} statsByCompany
+ * @param {'budget' | 'count'} metric
+ * @return {Array<Array<*>>}
+ */
+function buildCompanySuccessfulRows_(statsByCompany, metric) {
+  const rows = [['компания', 'успешно реализовано', 'отправка', 'закрытие договора', 'итого']];
+  const companies = Object.entries(statsByCompany).sort((a, b) => {
+    const aTotal = metric === 'budget' ? a[1].totalBudget : a[1].totalCount;
+    const bTotal = metric === 'budget' ? b[1].totalBudget : b[1].totalCount;
+    return bTotal - aTotal || a[0].localeCompare(b[0], 'ru');
+  });
+
+  companies.forEach(([companyName, stats]) => {
+    const statusValues = SUCCESS_STATUS_ORDER.map((status) =>
+      metric === 'budget' ? stats.statusBudgets[status] : stats.statusCounts[status],
+    );
+    const totalValue = metric === 'budget' ? stats.totalBudget : stats.totalCount;
+    rows.push([companyName].concat(statusValues, [totalValue]));
+  });
+
+  if (rows.length === 1) {
+    rows.push([EMPTY_COMPANY_LABEL, 0, 0, 0, 0]);
+  }
+
+  return rows;
+}
+
+/**
+ * Resolves company name from C column, fallback to parsed value from B.
+ * @param {*} companyCellValue
+ * @param {*} dealNameCellValue
+ * @return {string}
+ */
+function resolveCompanyName_(companyCellValue, dealNameCellValue) {
+  const companyFromC = normalizeCompanyName_(companyCellValue);
+  if (companyFromC) {
+    return companyFromC;
+  }
+
+  const dealName = normalizeCompanyName_(dealNameCellValue);
+  if (!dealName) {
+    return EMPTY_COMPANY_LABEL;
+  }
+
+  const fromDealName = normalizeCompanyName_(
+    dealName.replace(/^\s*\d+\s*[a-zа-яё-]*\s*[.)\-–—:]?\s*/i, ''),
+  );
+  return fromDealName || dealName || EMPTY_COMPANY_LABEL;
+}
+
+/**
+ * Normalizes company text.
+ * @param {*} value
+ * @return {string}
+ */
+function normalizeCompanyName_(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Normalizes successful status value for matching.
  * @param {*} value
  * @return {string}
@@ -574,7 +698,9 @@ function getSourceSheet_(spreadsheet) {
         sheet.getName() !== SUMMARY_SHEET_NAME &&
         sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME &&
         sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME &&
-        sheet.getName() !== SUCCESS_SUMMARY_SHEET_NAME,
+        sheet.getName() !== SUCCESS_SUMMARY_SHEET_NAME &&
+        sheet.getName() !== SUCCESS_COMPANY_BUDGET_SHEET_NAME &&
+        sheet.getName() !== SUCCESS_COMPANY_COUNT_SHEET_NAME,
     );
 
   const byHeader = sheets.find((sheet) => {
