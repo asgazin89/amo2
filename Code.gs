@@ -3,8 +3,10 @@ const SOURCE_SHEET_NAME = '';
 const ID_COLUMN_INDEX = 1; // A
 const SOURCE_COLUMN_INDEX = 5; // E
 const BUDGET_COLUMN_INDEX = 6; // F
+const DATE_COLUMN_INDEX = 7; // G (Дата создания)
 const SUMMARY_SHEET_NAME = 'Сводка причин отказа';
 const PROFIT_SUMMARY_SHEET_NAME = 'Сводка причин отказа и прибыли';
+const MONTHLY_SUMMARY_SHEET_NAME = 'Сводка причин по месяцам';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 
@@ -15,12 +17,15 @@ const STAGE_MARKERS = ['закрыто и не реализовано', 'зак�
  * - SUMMARY_SHEET_NAME: причина отказа | количество | процент от общего числа сделок
  * - PROFIT_SUMMARY_SHEET_NAME:
  *   причина отказа | количество | недополученная прибыль | процент от общего числа сделок
+ * - MONTHLY_SUMMARY_SHEET_NAME:
+ *   отдельная таблица на каждую причину отказа с помесячными метриками
  */
 function buildRefusalReasonSummary() {
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sourceSheet = getSourceSheet_(spreadsheet);
   const summarySheet = getOrCreateSheet_(spreadsheet, SUMMARY_SHEET_NAME);
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
+  const monthlySummarySheet = getOrCreateSheet_(spreadsheet, MONTHLY_SUMMARY_SHEET_NAME);
 
   const lastRow = sourceSheet.getLastRow();
   const summaryRows = [['причина отказа', 'количество', 'процент от общего числа сделок']];
@@ -30,10 +35,11 @@ function buildRefusalReasonSummary() {
 
   if (lastRow > 1) {
     const sourceRows = sourceSheet
-      .getRange(2, ID_COLUMN_INDEX, lastRow - 1, BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX + 1)
+      .getRange(2, ID_COLUMN_INDEX, lastRow - 1, DATE_COLUMN_INDEX - ID_COLUMN_INDEX + 1)
       .getValues();
 
     const totalDeals = countDealsById_(sourceRows);
+    const totalDealsByMonth = countDealsByMonth_(sourceRows);
     const reasonStats = collectReasonStats_(sourceRows);
     const sortedStats = Object.entries(reasonStats).sort(
       (a, b) =>
@@ -47,6 +53,12 @@ function buildRefusalReasonSummary() {
       summaryRows.push([reason, stats.count, dealShare]);
       profitSummaryRows.push([reason, stats.count, stats.lostProfit, dealShare]);
     });
+
+    const monthlyRows = buildMonthlySummaryRows_(sortedStats, totalDealsByMonth);
+    writeTable_(monthlySummarySheet, monthlyRows);
+    applyMonthlySummaryFormats_(monthlySummarySheet, monthlyRows);
+  } else {
+    writeTable_(monthlySummarySheet, [['нет данных', '', '', '']]);
   }
 
   writeTable_(summarySheet, summaryRows);
@@ -57,9 +69,9 @@ function buildRefusalReasonSummary() {
 }
 
 /**
- * Collects per-reason count and budget sum for closed-unrealized deals.
- * @param {Array<Array<*>>} sourceRows rows from columns A:F
- * @return {Object<string, {count:number, lostProfit:number}>}
+ * Collects per-reason totals and per-month stats for closed-unrealized deals.
+ * @param {Array<Array<*>>} sourceRows rows from columns A:G
+ * @return {Object<string, {count:number, lostProfit:number, months:Object<string, {count:number, lostProfit:number}>}>}
  */
 function collectReasonStats_(sourceRows) {
   const statsByReason = {};
@@ -73,12 +85,25 @@ function collectReasonStats_(sourceRows) {
 
     const reason = extractReason_(stageValue);
     const budget = parseBudget_(row[BUDGET_COLUMN_INDEX - ID_COLUMN_INDEX]);
+    const monthKey = parseMonthKey_(row[DATE_COLUMN_INDEX - ID_COLUMN_INDEX]);
+
     if (!statsByReason[reason]) {
-      statsByReason[reason] = {count: 0, lostProfit: 0};
+      statsByReason[reason] = {count: 0, lostProfit: 0, months: {}};
     }
 
     statsByReason[reason].count += 1;
     statsByReason[reason].lostProfit += budget;
+
+    if (!monthKey) {
+      return;
+    }
+
+    if (!statsByReason[reason].months[monthKey]) {
+      statsByReason[reason].months[monthKey] = {count: 0, lostProfit: 0};
+    }
+
+    statsByReason[reason].months[monthKey].count += 1;
+    statsByReason[reason].months[monthKey].lostProfit += budget;
   });
 
   return statsByReason;
@@ -86,7 +111,7 @@ function collectReasonStats_(sourceRows) {
 
 /**
  * Counts total number of deals by non-empty ID in column A.
- * @param {Array<Array<*>>} sourceRows rows from columns A:F
+ * @param {Array<Array<*>>} sourceRows rows from columns A:G
  * @return {number}
  */
 function countDealsById_(sourceRows) {
@@ -98,6 +123,157 @@ function countDealsById_(sourceRows) {
 
     return String(idValue || '').trim() !== '';
   }).length;
+}
+
+/**
+ * Counts total deals by month using non-empty ID in column A and creation date in G.
+ * @param {Array<Array<*>>} sourceRows rows from columns A:G
+ * @return {Object<string, number>}
+ */
+function countDealsByMonth_(sourceRows) {
+  const totals = {};
+
+  sourceRows.forEach((row) => {
+    const idValue = row[0];
+    const hasId =
+      (typeof idValue === 'number' && Number.isFinite(idValue)) ||
+      String(idValue || '').trim() !== '';
+    if (!hasId) {
+      return;
+    }
+
+    const monthKey = parseMonthKey_(row[DATE_COLUMN_INDEX - ID_COLUMN_INDEX]);
+    if (!monthKey) {
+      return;
+    }
+
+    totals[monthKey] = (totals[monthKey] || 0) + 1;
+  });
+
+  return totals;
+}
+
+/**
+ * Builds rows for monthly summary sheet.
+ * @param {Array<[string, {count:number, lostProfit:number, months:Object<string, {count:number, lostProfit:number}>}]>} sortedStats
+ * @param {Object<string, number>} totalDealsByMonth
+ * @return {Array<Array<*>>}
+ */
+function buildMonthlySummaryRows_(sortedStats, totalDealsByMonth) {
+  const monthKeys = Object.keys(totalDealsByMonth).sort();
+  if (sortedStats.length === 0 || monthKeys.length === 0) {
+    return [['нет данных', '', '', '']];
+  }
+
+  const rows = [];
+
+  sortedStats.forEach(([reason, stats], reasonIndex) => {
+    rows.push([`Причина отказа: ${reason}`, '', '', '']);
+    rows.push(['месяц', 'количество', 'процент от общего числа сделок', 'недополученная прибыль']);
+
+    monthKeys.forEach((monthKey) => {
+      const monthStats = stats.months[monthKey] || {count: 0, lostProfit: 0};
+      const monthTotalDeals = totalDealsByMonth[monthKey] || 0;
+      const monthShare = monthTotalDeals > 0 ? monthStats.count / monthTotalDeals : 0;
+
+      rows.push([formatMonthKey_(monthKey), monthStats.count, monthShare, monthStats.lostProfit]);
+    });
+
+    if (reasonIndex < sortedStats.length - 1) {
+      rows.push(['', '', '', '']);
+    }
+  });
+
+  return rows;
+}
+
+/**
+ * Applies number formats for monthly summary columns.
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {Array<Array<*>>} rows
+ */
+function applyMonthlySummaryFormats_(sheet, rows) {
+  if (rows.length === 0) {
+    return;
+  }
+
+  sheet.getRange(1, 3, rows.length, 1).setNumberFormat('0.00%');
+  sheet.getRange(1, 4, rows.length, 1).setNumberFormat('#,##0.00');
+
+  rows.forEach((row, index) => {
+    const isReasonTitle =
+      String(row[0] || '').startsWith('Причина отказа:') &&
+      String(row[1] || '') === '' &&
+      String(row[2] || '') === '' &&
+      String(row[3] || '') === '';
+    const isTableHeader = String(row[0] || '').toLowerCase() === 'месяц';
+
+    if (isReasonTitle || isTableHeader) {
+      sheet.getRange(index + 1, 1, 1, 4).setFontWeight('bold');
+    }
+  });
+}
+
+/**
+ * Parses month key (YYYY-MM) from date value.
+ * Supports Date object and string like "dd.mm.yyyy hh:mm:ss".
+ * @param {*} value
+ * @return {string}
+ */
+function parseMonthKey_(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !Number.isNaN(value.getTime())) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  const datePart = raw.split(' ')[0];
+  const match = datePart.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (!match) {
+    return '';
+  }
+
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  if (!Number.isFinite(month) || !Number.isFinite(year) || month < 1 || month > 12) {
+    return '';
+  }
+
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+/**
+ * Formats month key YYYY-MM to human-readable Russian label.
+ * @param {string} monthKey
+ * @return {string}
+ */
+function formatMonthKey_(monthKey) {
+  const [yearText, monthText] = String(monthKey || '').split('-');
+  const month = Number(monthText);
+  const year = Number(yearText);
+  const monthNames = [
+    'январь',
+    'февраль',
+    'март',
+    'апрель',
+    'май',
+    'июнь',
+    'июль',
+    'август',
+    'сентябрь',
+    'октябрь',
+    'ноябрь',
+    'декабрь',
+  ];
+
+  if (!Number.isFinite(month) || !Number.isFinite(year) || month < 1 || month > 12) {
+    return monthKey;
+  }
+
+  return `${monthNames[month - 1]} ${year}`;
 }
 
 /**
@@ -204,7 +380,9 @@ function getSourceSheet_(spreadsheet) {
     .getSheets()
     .filter(
       (sheet) =>
-        sheet.getName() !== SUMMARY_SHEET_NAME && sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME,
+        sheet.getName() !== SUMMARY_SHEET_NAME &&
+        sheet.getName() !== PROFIT_SUMMARY_SHEET_NAME &&
+        sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME,
     );
 
   const byHeader = sheets.find((sheet) => {
