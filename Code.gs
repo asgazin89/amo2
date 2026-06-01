@@ -16,6 +16,7 @@ const EMPTY_COMPANY_LABEL = 'компания не указана';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 const SUCCESS_STATUS_ORDER = ['успешно реализовано', 'отправка', 'закрытие договора'];
+const AUTO_REFRESH_HANDLER = 'refreshAllReports';
 
 /**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
@@ -105,6 +106,40 @@ function buildRefusalReasonSummary() {
   summarySheet.getRange(2, 3, Math.max(summaryRows.length - 1, 1), 1).setNumberFormat('0.00%');
   profitSummarySheet.getRange(2, 3, Math.max(profitSummaryRows.length - 1, 1), 1).setNumberFormat('#,##0.00');
   profitSummarySheet.getRange(2, 4, Math.max(profitSummaryRows.length - 1, 1), 1).setNumberFormat('0.00%');
+}
+
+/**
+ * Main public entrypoint to recalculate all report sheets.
+ * Can be used in triggers and manual runs.
+ */
+function refreshAllReports() {
+  buildRefusalReasonSummary();
+}
+
+/**
+ * Installs auto-refresh triggers:
+ * - onEdit for instant updates after changes
+ * - hourly time trigger as fallback refresh
+ *
+ * Run once manually to enable automatic updates.
+ */
+function installAutoRefreshTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers
+    .filter((trigger) => trigger.getHandlerFunction() === AUTO_REFRESH_HANDLER)
+    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+
+  ScriptApp.newTrigger(AUTO_REFRESH_HANDLER).forSpreadsheet(SPREADSHEET_ID).onEdit().create();
+  ScriptApp.newTrigger(AUTO_REFRESH_HANDLER).timeBased().everyHours(1).create();
+}
+
+/**
+ * Removes report auto-refresh triggers created by installAutoRefreshTriggers().
+ */
+function removeAutoRefreshTriggers() {
+  ScriptApp.getProjectTriggers()
+    .filter((trigger) => trigger.getHandlerFunction() === AUTO_REFRESH_HANDLER)
+    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
 }
 
 /**
