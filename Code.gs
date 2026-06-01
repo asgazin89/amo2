@@ -12,6 +12,8 @@ const MONTHLY_SUMMARY_SHEET_NAME = 'Сводка причин по месяца�
 const SUCCESS_SUMMARY_SHEET_NAME = 'Сводка успешных сделок';
 const SUCCESS_COMPANY_BUDGET_SHEET_NAME = 'Успешные сделки по компаниям (сумма)';
 const SUCCESS_COMPANY_COUNT_SHEET_NAME = 'Успешные сделки по компаниям (количество)';
+const CONTROL_SHEET_NAME = '⚡ Обновление отчетов';
+const CONTROL_BUTTON_CELL = 'B4';
 const EMPTY_COMPANY_LABEL = 'компания не указана';
 const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
@@ -25,6 +27,8 @@ const LAST_AUTO_REFRESH_KEY = 'lastAutoRefreshTs';
  * Adds custom menu buttons to spreadsheet UI.
  */
 function onOpen() {
+  setupRefreshControlSheet_();
+
   SpreadsheetApp.getUi()
     .createMenu('Отчеты CRM')
     .addItem('Обновить все отчеты', 'runRefreshFromUi')
@@ -32,6 +36,14 @@ function onOpen() {
     .addItem('Включить автообновление', 'installAutoRefreshTriggers')
     .addItem('Отключить автообновление', 'removeAutoRefreshTriggers')
     .addToUi();
+}
+
+/**
+ * Manual helper to recreate the visible refresh control sheet.
+ * Use this if the control sheet is missing.
+ */
+function setupRefreshButton() {
+  setupRefreshControlSheet_();
 }
 
 /**
@@ -150,6 +162,11 @@ function runRefreshFromUi() {
  * @param {GoogleAppsScript.Events.SheetsOnEdit} e
  */
 function onEdit(e) {
+  if (isManualRefreshButtonEdit_(e)) {
+    runRefreshFromControlButton_(e);
+    return;
+  }
+
   runRefreshWithLock_('onEdit', e);
 }
 
@@ -195,6 +212,24 @@ function removeAutoRefreshTriggers() {
 }
 
 /**
+ * Handles refresh from a visible checkbox button on control sheet.
+ * @param {GoogleAppsScript.Events.SheetsOnEdit} e
+ */
+function runRefreshFromControlButton_(e) {
+  if (!e || !e.range) {
+    return;
+  }
+
+  const spreadsheet = e.range.getSheet().getParent();
+  spreadsheet.toast('Идет обновление отчетов...', 'Отчеты CRM', 4);
+
+  runRefreshWithLock_('manualButton', e);
+
+  e.range.setValue(false);
+  spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
+}
+
+/**
  * Refresh wrapper with lock and lightweight debounce for frequent edits.
  * @param {string} source
  * @param {Object=} eventObject
@@ -220,6 +255,52 @@ function runRefreshWithLock_(source, eventObject) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Returns true when edited cell is the visible refresh checkbox button.
+ * @param {GoogleAppsScript.Events.SheetsOnEdit} e
+ * @return {boolean}
+ */
+function isManualRefreshButtonEdit_(e) {
+  if (!e || !e.range || String(e.value || '').toUpperCase() !== 'TRUE') {
+    return false;
+  }
+
+  const sheet = e.range.getSheet();
+  return (
+    sheet.getName() === CONTROL_SHEET_NAME &&
+    e.range.getA1Notation() === CONTROL_BUTTON_CELL
+  );
+}
+
+/**
+ * Creates/updates a visible control sheet with manual refresh button.
+ */
+function setupRefreshControlSheet_() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = getOrCreateSheet_(spreadsheet, CONTROL_SHEET_NAME);
+
+  sheet.clear();
+  sheet.setFrozenRows(1);
+  sheet.getRange('A1:E1').merge();
+  sheet.getRange('A1').setValue('Управление обновлением отчетов');
+  sheet.getRange('A2:E2').merge();
+  sheet.getRange('A2').setValue('Нажми на чекбокс в B4, чтобы запустить полный пересчет всех отчетов.');
+  sheet.getRange('A4').setValue('Кнопка обновления:');
+  sheet.getRange(CONTROL_BUTTON_CELL).insertCheckboxes();
+  sheet.getRange(CONTROL_BUTTON_CELL).setValue(false);
+  sheet.getRange('C4:E4').merge();
+  sheet.getRange('C4').setValue('⬅ Нажми здесь');
+
+  sheet.getRange('A1').setFontWeight('bold').setFontSize(14).setHorizontalAlignment('center');
+  sheet.getRange('A2').setWrap(true);
+  sheet.getRange('A4').setFontWeight('bold');
+  sheet.getRange(CONTROL_BUTTON_CELL).setBackground('#34a853').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.getRange('C4').setFontWeight('bold').setFontColor('#1a73e8');
+  sheet.autoResizeColumns(1, 5);
+  sheet.setColumnWidths(1, 5, 180);
+  sheet.setRowHeights(1, 4, 38);
 }
 
 /**
@@ -834,7 +915,8 @@ function getSourceSheet_(spreadsheet) {
         sheet.getName() !== MONTHLY_SUMMARY_SHEET_NAME &&
         sheet.getName() !== SUCCESS_SUMMARY_SHEET_NAME &&
         sheet.getName() !== SUCCESS_COMPANY_BUDGET_SHEET_NAME &&
-        sheet.getName() !== SUCCESS_COMPANY_COUNT_SHEET_NAME,
+        sheet.getName() !== SUCCESS_COMPANY_COUNT_SHEET_NAME &&
+        sheet.getName() !== CONTROL_SHEET_NAME,
     );
 
   const byHeader = sheets.find((sheet) => {
