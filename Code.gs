@@ -17,6 +17,9 @@ const EMPTY_REASON_LABEL = 'причина не указана';
 const STAGE_MARKERS = ['закрыто и не реализовано', 'закрыто и нереализовано'];
 const SUCCESS_STATUS_ORDER = ['успешно реализовано', 'отправка', 'закрытие договора'];
 const AUTO_REFRESH_HANDLER = 'refreshAllReports';
+const AUTO_REFRESH_CHANGE_HANDLER = 'refreshAllReportsOnChange';
+const MIN_AUTO_REFRESH_INTERVAL_MS = 30000;
+const LAST_AUTO_REFRESH_KEY = 'lastAutoRefreshTs';
 
 /**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
@@ -113,7 +116,24 @@ function buildRefusalReasonSummary() {
  * Can be used in triggers and manual runs.
  */
 function refreshAllReports() {
-  buildRefusalReasonSummary();
+  runRefreshWithLock_('manual');
+}
+
+/**
+ * Simple trigger that runs on direct user edits in the spreadsheet.
+ * Works without explicit trigger installation.
+ * @param {GoogleAppsScript.Events.SheetsOnEdit} e
+ */
+function onEdit(e) {
+  runRefreshWithLock_('onEdit', e);
+}
+
+/**
+ * Installable trigger handler for spreadsheet change events.
+ * @param {GoogleAppsScript.Events.SheetsOnChange} e
+ */
+function refreshAllReportsOnChange(e) {
+  runRefreshWithLock_('onChange', e);
 }
 
 /**
@@ -125,12 +145,16 @@ function refreshAllReports() {
  */
 function installAutoRefreshTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
-  triggers
-    .filter((trigger) => trigger.getHandlerFunction() === AUTO_REFRESH_HANDLER)
-    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+  triggers.forEach((trigger) => {
+    const handlerName = trigger.getHandlerFunction();
+    if (handlerName === AUTO_REFRESH_HANDLER || handlerName === AUTO_REFRESH_CHANGE_HANDLER) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 
   ScriptApp.newTrigger(AUTO_REFRESH_HANDLER).forSpreadsheet(SPREADSHEET_ID).onEdit().create();
-  ScriptApp.newTrigger(AUTO_REFRESH_HANDLER).timeBased().everyHours(1).create();
+  ScriptApp.newTrigger(AUTO_REFRESH_CHANGE_HANDLER).forSpreadsheet(SPREADSHEET_ID).onChange().create();
+  ScriptApp.newTrigger(AUTO_REFRESH_HANDLER).timeBased().everyMinutes(5).create();
 }
 
 /**
@@ -138,8 +162,58 @@ function installAutoRefreshTriggers() {
  */
 function removeAutoRefreshTriggers() {
   ScriptApp.getProjectTriggers()
-    .filter((trigger) => trigger.getHandlerFunction() === AUTO_REFRESH_HANDLER)
+    .filter((trigger) => {
+      const handlerName = trigger.getHandlerFunction();
+      return handlerName === AUTO_REFRESH_HANDLER || handlerName === AUTO_REFRESH_CHANGE_HANDLER;
+    })
     .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+}
+
+/**
+ * Refresh wrapper with lock and lightweight debounce for frequent edits.
+ * @param {string} source
+ * @param {Object=} eventObject
+ */
+function runRefreshWithLock_(source, eventObject) {
+  if (source === 'onEdit' && shouldSkipAutoRefresh_()) {
+    return;
+  }
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return;
+  }
+
+  try {
+    buildRefusalReasonSummary();
+    markAutoRefreshTimestamp_();
+  } catch (error) {
+    console.error(`refresh failed from ${source}`, error);
+    if (eventObject) {
+      throw error;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Returns true when previous refresh happened too recently.
+ * Helps avoid trigger flooding on rapid edits.
+ * @return {boolean}
+ */
+function shouldSkipAutoRefresh_() {
+  const props = PropertiesService.getScriptProperties();
+  const now = Date.now();
+  const prev = Number(props.getProperty(LAST_AUTO_REFRESH_KEY) || 0);
+  return Number.isFinite(prev) && now - prev < MIN_AUTO_REFRESH_INTERVAL_MS;
+}
+
+/**
+ * Persists successful refresh timestamp.
+ */
+function markAutoRefreshTimestamp_() {
+  PropertiesService.getScriptProperties().setProperty(LAST_AUTO_REFRESH_KEY, String(Date.now()));
 }
 
 /**
