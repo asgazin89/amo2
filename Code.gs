@@ -22,6 +22,19 @@ const MIN_AUTO_REFRESH_INTERVAL_MS = 30000;
 const LAST_AUTO_REFRESH_KEY = 'lastAutoRefreshTs';
 
 /**
+ * Adds custom menu buttons to spreadsheet UI.
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Отчеты CRM')
+    .addItem('Обновить все отчеты', 'runRefreshFromUi')
+    .addSeparator()
+    .addItem('Включить автообновление', 'installAutoRefreshTriggers')
+    .addItem('Отключить автообновление', 'removeAutoRefreshTriggers')
+    .addToUi();
+}
+
+/**
  * Builds a summary table of refusal reasons for closed-unrealized deals.
  * Source data is read from column E in detected source sheet.
  * Result is written to:
@@ -117,6 +130,18 @@ function buildRefusalReasonSummary() {
  */
 function refreshAllReports() {
   runRefreshWithLock_('manual');
+}
+
+/**
+ * UI action for manual report refresh from spreadsheet menu.
+ */
+function runRefreshFromUi() {
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  spreadsheet.toast('Идет обновление отчетов...', 'Отчеты CRM', 4);
+
+  refreshAllReports();
+
+  spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
 }
 
 /**
