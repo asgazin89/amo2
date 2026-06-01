@@ -287,15 +287,15 @@ function setupRefreshControlSheet_() {
   sheet.getRange('A1').setValue('Управление обновлением отчетов');
   sheet.getRange('A2:E2').merge();
   sheet.getRange('A2').setValue('Нажми на чекбокс в B4, чтобы запустить полный пересчет всех отчетов.');
-  sheet.getRange('A4').setValue('Кнопка обновления:');
+  sheet.getRange('A4').setValue('обновить данные');
   sheet.getRange(CONTROL_BUTTON_CELL).insertCheckboxes();
   sheet.getRange(CONTROL_BUTTON_CELL).setValue(false);
   sheet.getRange('C4:E4').merge();
-  sheet.getRange('C4').setValue('⬅ Нажми здесь');
+  sheet.getRange('C4').setValue('⬅ обновить данные');
 
   sheet.getRange('A1').setFontWeight('bold').setFontSize(14).setHorizontalAlignment('center');
   sheet.getRange('A2').setWrap(true);
-  sheet.getRange('A4').setFontWeight('bold');
+  sheet.getRange('A4').setFontWeight('bold').setFontSize(12);
   sheet.getRange(CONTROL_BUTTON_CELL).setBackground('#34a853').setFontColor('#ffffff').setFontWeight('bold');
   sheet.getRange('C4').setFontWeight('bold').setFontColor('#1a73e8');
   sheet.autoResizeColumns(1, 5);
