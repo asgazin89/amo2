@@ -58,7 +58,7 @@ function setupRefreshButton() {
  *   + 2 больших графика (количество и недополученная прибыль) по всем причинам
  */
 function buildRefusalReasonSummary() {
-  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   const sourceSheet = getSourceSheet_(spreadsheet);
   const summarySheet = getOrCreateSheet_(spreadsheet, SUMMARY_SHEET_NAME);
   const profitSummarySheet = getOrCreateSheet_(spreadsheet, PROFIT_SUMMARY_SHEET_NAME);
@@ -148,7 +148,7 @@ function refreshAllReports() {
  * UI action for manual report refresh from spreadsheet menu.
  */
 function runRefreshFromUi() {
-  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   spreadsheet.toast('Идет обновление отчетов...', 'Отчеты CRM', 4);
 
   refreshAllReports();
@@ -175,6 +175,10 @@ function onEdit(e) {
  * @param {GoogleAppsScript.Events.SheetsOnChange} e
  */
 function refreshAllReportsOnChange(e) {
+  if (shouldSkipChangeEvent_(e)) {
+    return;
+  }
+
   runRefreshWithLock_('onChange', e);
 }
 
@@ -222,11 +226,15 @@ function runRefreshFromControlButton_(e) {
 
   const spreadsheet = e.range.getSheet().getParent();
   spreadsheet.toast('Идет обновление отчетов...', 'Отчеты CRM', 4);
-
-  runRefreshWithLock_('manualButton', e);
-
-  e.range.setValue(false);
-  spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
+  try {
+    runRefreshWithLock_('manualButton', e);
+    spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
+  } catch (error) {
+    spreadsheet.toast(`Ошибка обновления: ${error.message}`, 'Отчеты CRM', 8);
+    throw error;
+  } finally {
+    e.range.setValue(false);
+  }
 }
 
 /**
@@ -320,6 +328,20 @@ function shouldSkipAutoRefresh_() {
  */
 function markAutoRefreshTimestamp_() {
   PropertiesService.getScriptProperties().setProperty(LAST_AUTO_REFRESH_KEY, String(Date.now()));
+}
+
+/**
+ * Filters noisy onChange events to avoid recursive reruns from formatting/charts.
+ * @param {GoogleAppsScript.Events.SheetsOnChange=} e
+ * @return {boolean}
+ */
+function shouldSkipChangeEvent_(e) {
+  if (!e || !e.changeType) {
+    return false;
+  }
+
+  const skipTypes = ['FORMAT', 'OTHER', 'INSERT_GRID', 'REMOVE_GRID'];
+  return skipTypes.includes(String(e.changeType));
 }
 
 /**
