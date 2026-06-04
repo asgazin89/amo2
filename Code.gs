@@ -22,6 +22,8 @@ const AUTO_REFRESH_HANDLER = 'refreshAllReports';
 const AUTO_REFRESH_CHANGE_HANDLER = 'refreshAllReportsOnChange';
 const MIN_AUTO_REFRESH_INTERVAL_MS = 30000;
 const LAST_AUTO_REFRESH_KEY = 'lastAutoRefreshTs';
+const CONTROL_STATUS_UPDATED_AT_CELL = 'B6';
+const CONTROL_STATUS_MESSAGE_CELL = 'B7';
 
 /**
  * Adds custom menu buttons to spreadsheet UI.
@@ -150,10 +152,13 @@ function refreshAllReports() {
 function runRefreshFromUi() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   spreadsheet.toast('Идет обновление отчетов...', 'Отчеты CRM', 4);
-
-  refreshAllReports();
-
-  spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
+  try {
+    refreshAllReports();
+    spreadsheet.toast('Отчеты успешно обновлены', 'Отчеты CRM', 5);
+  } catch (error) {
+    spreadsheet.toast(`Ошибка обновления: ${error.message}`, 'Отчеты CRM', 8);
+    throw error;
+  }
 }
 
 /**
@@ -255,11 +260,11 @@ function runRefreshWithLock_(source, eventObject) {
   try {
     buildRefusalReasonSummary();
     markAutoRefreshTimestamp_();
+    updateControlStatus_(`обновлено (${source})`);
   } catch (error) {
     console.error(`refresh failed from ${source}`, error);
-    if (eventObject) {
-      throw error;
-    }
+    updateControlStatus_(`ошибка: ${error.message}`);
+    throw error;
   } finally {
     lock.releaseLock();
   }
@@ -298,12 +303,17 @@ function setupRefreshControlSheet_() {
   sheet.getRange('A4').setValue('обновить данные');
   sheet.getRange(CONTROL_BUTTON_CELL).insertCheckboxes();
   sheet.getRange(CONTROL_BUTTON_CELL).setValue(false);
+  sheet.getRange('A6').setValue('Последнее обновление:');
+  sheet.getRange('A7').setValue('Статус:');
+  sheet.getRange(CONTROL_STATUS_UPDATED_AT_CELL).setValue('-');
+  sheet.getRange(CONTROL_STATUS_MESSAGE_CELL).setValue('ожидание');
   sheet.getRange('C4:E4').merge();
   sheet.getRange('C4').setValue('⬅ обновить данные');
 
   sheet.getRange('A1').setFontWeight('bold').setFontSize(14).setHorizontalAlignment('center');
   sheet.getRange('A2').setWrap(true);
   sheet.getRange('A4').setFontWeight('bold').setFontSize(12);
+  sheet.getRange('A6:A7').setFontWeight('bold');
   sheet.getRange(CONTROL_BUTTON_CELL).setBackground('#34a853').setFontColor('#ffffff').setFontWeight('bold');
   sheet.getRange('C4').setFontWeight('bold').setFontColor('#1a73e8');
   sheet.autoResizeColumns(1, 5);
@@ -328,6 +338,18 @@ function shouldSkipAutoRefresh_() {
  */
 function markAutoRefreshTimestamp_() {
   PropertiesService.getScriptProperties().setProperty(LAST_AUTO_REFRESH_KEY, String(Date.now()));
+}
+
+/**
+ * Writes refresh status to control sheet for visibility.
+ * @param {string} message
+ */
+function updateControlStatus_(message) {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = getOrCreateSheet_(spreadsheet, CONTROL_SHEET_NAME);
+  const nowText = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
+  sheet.getRange(CONTROL_STATUS_UPDATED_AT_CELL).setValue(nowText);
+  sheet.getRange(CONTROL_STATUS_MESSAGE_CELL).setValue(message || '');
 }
 
 /**
@@ -751,15 +773,15 @@ function normalizeSuccessfulStatus_(value) {
  * @return {string}
  */
 function resolveSuccessfulStatusKey_(normalizedStage) {
-  if (normalizedStage === 'успешно реализовано') {
+  if (normalizedStage.includes('успешно реализован')) {
     return 'успешно реализовано';
   }
 
-  if (normalizedStage === 'отправка') {
+  if (normalizedStage.includes('отправка')) {
     return 'отправка';
   }
 
-  if (normalizedStage === 'закрытие договора') {
+  if (normalizedStage.includes('закрытие договора')) {
     return 'закрытие договора';
   }
 
