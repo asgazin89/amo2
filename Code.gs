@@ -38,17 +38,62 @@ function buildSingleDealCompaniesReport() {
 
   var contactIndexes = getContactIndexes_(headers);
   var companyCounts = {};
+  var companyByProjectKey = {};
+  var projectCompanyCounts = {};
   var prepared = [];
   var i;
 
   for (i = 0; i < data.length; i++) {
     var row = data[i];
-    var companyName = extractCompanyNameFromDeal_(row[idxDeal]);
-    companyCounts[companyName] = (companyCounts[companyName] || 0) + 1;
+    var dealName = row[idxDeal];
+    var companyName = extractCompanyNameFromDeal_(dealName);
+    var projectKey = extractProjectKey_(dealName);
+
+    if (projectKey && companyName !== NO_COMPANY_LABEL) {
+      if (!projectCompanyCounts[projectKey]) {
+        projectCompanyCounts[projectKey] = {};
+      }
+      projectCompanyCounts[projectKey][companyName] = (projectCompanyCounts[projectKey][companyName] || 0) + 1;
+    }
+
     prepared.push({
       row: row,
       companyName: companyName,
+      projectKey: projectKey,
     });
+  }
+
+  // Build projectKey -> dominant company map (e.g. 70К.25 -> ООО СПТ).
+  var projectKeys = Object.keys(projectCompanyCounts);
+  for (i = 0; i < projectKeys.length; i++) {
+    var key = projectKeys[i];
+    var byCompany = projectCompanyCounts[key];
+    var names = Object.keys(byCompany);
+    if (names.length === 0) {
+      continue;
+    }
+
+    var bestName = names[0];
+    var j;
+    for (j = 1; j < names.length; j++) {
+      if (byCompany[names[j]] > byCompany[bestName]) {
+        bestName = names[j];
+      }
+    }
+    companyByProjectKey[key] = bestName;
+  }
+
+  // Final company assignment + counting.
+  for (i = 0; i < prepared.length; i++) {
+    if (
+      prepared[i].companyName === NO_COMPANY_LABEL &&
+      prepared[i].projectKey &&
+      companyByProjectKey[prepared[i].projectKey]
+    ) {
+      prepared[i].companyName = companyByProjectKey[prepared[i].projectKey];
+    }
+
+    companyCounts[prepared[i].companyName] = (companyCounts[prepared[i].companyName] || 0) + 1;
   }
 
   var outHeaders = ['Название сделки', 'Бюджет', 'Этап сделки', 'Дата открытия', 'Дата закрытия'];
@@ -206,10 +251,31 @@ function extractCompanyNameFromDeal_(dealName) {
       return normalizeCompanyName_(matchOrg[1]);
     }
 
-    return normalizeCompanyName_(candidate);
+    var normalizedCandidate = normalizeCompanyName_(candidate);
+    return isCompanyNameValid_(normalizedCandidate) ? normalizedCandidate : NO_COMPANY_LABEL;
   }
 
-  return normalizeCompanyName_(text) || NO_COMPANY_LABEL;
+  var fallback = normalizeCompanyName_(text);
+  return isCompanyNameValid_(fallback) ? fallback : NO_COMPANY_LABEL;
+}
+
+function extractProjectKey_(dealName) {
+  var text = String(dealName || '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return '';
+  }
+
+  var firstToken = text.split(' ')[0];
+  if (!isCodeToken_(firstToken)) {
+    return '';
+  }
+
+  var parts = firstToken.split('.');
+  if (parts.length >= 2) {
+    return parts[0] + '.' + parts[1];
+  }
+
+  return firstToken;
 }
 
 function isCodeToken_(token) {
@@ -231,6 +297,23 @@ function normalizeCompanyName_(value) {
     .replace(/\s+/g, ' ')
     .replace(/^[\s\-.,;:]+|[\s\-.,;:]+$/g, '')
     .trim();
+}
+
+function isCompanyNameValid_(name) {
+  var text = String(name || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  if (/^\(.*\)$/.test(text)) {
+    return false;
+  }
+
+  if (!/[A-Za-zА-Яа-яЁё]/.test(text)) {
+    return false;
+  }
+
+  return true;
 }
 
 function getOrCreateSheet_(spreadsheet, sheetName) {
