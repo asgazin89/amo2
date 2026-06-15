@@ -1,179 +1,179 @@
-const SPREADSHEET_ID = '19cqiVBuTDFdCUAyAw_1SkuLPEX5kzTOkO6NWDR_xHP8';
-const OUTPUT_SHEET_NAME = 'Компании с одной сделкой';
-
-const REQUIRED_COLUMNS = {
-  dealName: 'Название сделки',
-  budget: 'Бюджет',
-  stage: 'Этап сделки',
-  closeDate: 'Дата закрытия',
-};
+var SPREADSHEET_ID = '19cqiVBuTDFdCUAyAw_1SkuLPEX5kzTOkO6NWDR_xHP8';
+var OUTPUT_SHEET_NAME = 'Компании с одной сделкой';
+var NO_COMPANY_LABEL = 'компания не указана';
 
 /**
- * Builds a report with deals where company is mentioned only once.
- * Company is extracted from "Название сделки".
+ * Главная функция: строит отчет по компаниям с одной сделкой.
  */
 function buildSingleDealCompaniesReport() {
-  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sourceSheet = findSourceSheet_(spreadsheet);
-  const outputSheet = getOrCreateSheet_(spreadsheet, OUTPUT_SHEET_NAME);
+  var spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sourceSheet = findSourceSheet(spreadsheet);
+  var outputSheet = getOrCreateSheet(spreadsheet, OUTPUT_SHEET_NAME);
 
-  const lastRow = sourceSheet.getLastRow();
-  const lastColumn = sourceSheet.getLastColumn();
+  var lastRow = sourceSheet.getLastRow();
+  var lastColumn = sourceSheet.getLastColumn();
+  if (lastColumn === 0) {
+    throw new Error('Исходный лист пустой');
+  }
 
-  const headers = sourceSheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
-  const sourceRows =
-    lastRow > 1 ? sourceSheet.getRange(2, 1, lastRow - 1, lastColumn).getDisplayValues() : [];
+  var headers = sourceSheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  var rows = [];
+  if (lastRow > 1) {
+    rows = sourceSheet.getRange(2, 1, lastRow - 1, lastColumn).getDisplayValues();
+  }
 
-  const columnIndexes = resolveRequiredIndexes_(headers);
-  const contactIndexes = findContactColumnIndexes_(headers);
+  var idxDeal = headers.indexOf('Название сделки');
+  var idxBudget = headers.indexOf('Бюджет');
+  var idxStage = headers.indexOf('Этап сделки');
+  var idxCloseDate = headers.indexOf('Дата закрытия');
 
-  const companyCounts = {};
-  const preparedRows = sourceRows.map((row) => {
-    const dealName = String(row[columnIndexes.dealName] || '').trim();
-    const companyName = extractCompanyNameFromDeal_(dealName);
+  if (idxDeal < 0 || idxBudget < 0 || idxStage < 0 || idxCloseDate < 0) {
+    throw new Error('Не найдены обязательные колонки: Название сделки / Бюджет / Этап сделки / Дата закрытия');
+  }
+
+  var contactIndexes = getContactIndexes(headers);
+  var companyCounts = {};
+  var prepared = [];
+  var i;
+
+  for (i = 0; i < rows.length; i++) {
+    var dealName = String(rows[i][idxDeal] || '').trim();
+    var companyName = extractCompanyName(dealName);
     companyCounts[companyName] = (companyCounts[companyName] || 0) + 1;
-
-    return {row, companyName};
-  });
-
-  const outputHeaders = [
-    REQUIRED_COLUMNS.dealName,
-    REQUIRED_COLUMNS.budget,
-    REQUIRED_COLUMNS.stage,
-    REQUIRED_COLUMNS.closeDate,
-  ].concat(contactIndexes.map((index) => headers[index]));
-
-  const outputRows = preparedRows
-    .filter((entry) => companyCounts[entry.companyName] === 1)
-    .map((entry) => {
-      const row = entry.row;
-      return [
-        row[columnIndexes.dealName],
-        row[columnIndexes.budget],
-        row[columnIndexes.stage],
-        row[columnIndexes.closeDate],
-      ].concat(contactIndexes.map((index) => row[index]));
+    prepared.push({
+      row: rows[i],
+      companyName: companyName,
     });
+  }
 
-  const resultRows = [outputHeaders].concat(outputRows);
-  writeTable_(outputSheet, resultRows);
+  var outputHeaders = ['Название сделки', 'Бюджет', 'Этап сделки', 'Дата закрытия'];
+  for (i = 0; i < contactIndexes.length; i++) {
+    outputHeaders.push(headers[contactIndexes[i]]);
+  }
+
+  var outputRows = [outputHeaders];
+  for (i = 0; i < prepared.length; i++) {
+    var item = prepared[i];
+    if (companyCounts[item.companyName] !== 1) {
+      continue;
+    }
+
+    var out = [
+      item.row[idxDeal],
+      item.row[idxBudget],
+      item.row[idxStage],
+      item.row[idxCloseDate],
+    ];
+
+    var j;
+    for (j = 0; j < contactIndexes.length; j++) {
+      out.push(item.row[contactIndexes[j]]);
+    }
+    outputRows.push(out);
+  }
+
+  if (outputRows.length === 1) {
+    outputRows.push(['нет данных', '', '', '']);
+  }
+
+  writeTable(outputSheet, outputRows);
 }
 
 /**
- * Finds source sheet containing required columns.
- * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} spreadsheet
- * @return {GoogleAppsScript.Spreadsheet.Sheet}
+ * Ищет лист с нужными заголовками.
  */
-function findSourceSheet_(spreadsheet) {
-  const requiredHeaderNames = Object.values(REQUIRED_COLUMNS);
-  const sheet = spreadsheet.getSheets().find((candidate) => {
-    const lastColumn = candidate.getLastColumn();
+function findSourceSheet(spreadsheet) {
+  var sheets = spreadsheet.getSheets();
+  var i;
+  for (i = 0; i < sheets.length; i++) {
+    var sheet = sheets[i];
+    var lastColumn = sheet.getLastColumn();
     if (lastColumn === 0) {
-      return false;
+      continue;
     }
 
-    const headers = candidate.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
-    return requiredHeaderNames.every((headerName) => headers.includes(headerName));
-  });
-
-  if (!sheet) {
-    throw new Error('Не найден лист-источник с нужными колонками');
+    var headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+    if (
+      headers.indexOf('Название сделки') >= 0 &&
+      headers.indexOf('Бюджет') >= 0 &&
+      headers.indexOf('Этап сделки') >= 0 &&
+      headers.indexOf('Дата закрытия') >= 0
+    ) {
+      return sheet;
+    }
   }
-
-  return sheet;
+  throw new Error('Не найден лист-источник с нужными колонками');
 }
 
 /**
- * Resolves indexes of required columns.
- * @param {string[]} headers
- * @return {{dealName:number, budget:number, stage:number, closeDate:number}}
+ * Возвращает индексы всех контактных колонок.
  */
-function resolveRequiredIndexes_(headers) {
-  const indexes = {
-    dealName: headers.indexOf(REQUIRED_COLUMNS.dealName),
-    budget: headers.indexOf(REQUIRED_COLUMNS.budget),
-    stage: headers.indexOf(REQUIRED_COLUMNS.stage),
-    closeDate: headers.indexOf(REQUIRED_COLUMNS.closeDate),
-  };
+function getContactIndexes(headers) {
+  var indexes = [];
+  var i;
 
-  if (Object.values(indexes).some((index) => index < 0)) {
-    throw new Error('В исходном листе отсутствуют обязательные колонки');
+  for (i = 0; i < headers.length; i++) {
+    var header = String(headers[i] || '').trim();
+    if (!header) {
+      continue;
+    }
+
+    if (header === 'Основной контакт' || header === 'Компания контакта') {
+      indexes.push(i);
+      continue;
+    }
+
+    if (
+      /контакт/i.test(header) ||
+      /email/i.test(header) ||
+      /e-mail/i.test(header) ||
+      /телефон/i.test(header) ||
+      /phone/i.test(header) ||
+      /telegram/i.test(header) ||
+      /whatsapp/i.test(header) ||
+      /факс/i.test(header)
+    ) {
+      indexes.push(i);
+    }
   }
 
   return indexes;
 }
 
 /**
- * Finds contact columns by header patterns.
- * @param {string[]} headers
- * @return {number[]}
+ * Извлекает название компании из "Название сделки".
  */
-function findContactColumnIndexes_(headers) {
-  const explicitHeaders = new Set(['Основной контакт', 'Компания контакта']);
-  const contactPattern = /(контакт|email|e-mail|телефон|phone|telegram|whatsapp|факс)/i;
-
-  const indexes = [];
-  headers.forEach((header, index) => {
-    const headerText = String(header || '').trim();
-    if (!headerText) {
-      return;
-    }
-
-    if (explicitHeaders.has(headerText) || contactPattern.test(headerText)) {
-      indexes.push(index);
-    }
-  });
-
-  return indexes;
-}
-
-/**
- * Extract company name from deal name.
- * Example:
- *   "664К. ФКП \"НПЦ \"Дельта\"" -> "ФКП \"НПЦ \"Дельта\""
- * @param {string} dealName
- * @return {string}
- */
-function extractCompanyNameFromDeal_(dealName) {
-  const normalizedDealName = String(dealName || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!normalizedDealName) {
-    return 'компания не указана';
+function extractCompanyName(dealName) {
+  var normalized = String(dealName || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return NO_COMPANY_LABEL;
   }
 
-  const companyName = normalizedDealName
+  var company = normalized
     .replace(/^\s*\d+\s*[a-zа-яё-]*\s*[.)\-–—:]?\s*(?:\d+\s*[a-zа-яё-]*\s*[.)\-–—:]?\s*)*/i, '')
     .trim();
-  return companyName || normalizedDealName;
+
+  return company || normalized;
 }
 
 /**
- * Returns existing sheet by name or creates a new one.
- * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} spreadsheet
- * @param {string} sheetName
- * @return {GoogleAppsScript.Spreadsheet.Sheet}
+ * Возвращает лист или создает новый.
  */
-function getOrCreateSheet_(spreadsheet, sheetName) {
-  const existingSheet = spreadsheet.getSheetByName(sheetName);
-  if (existingSheet) {
-    return existingSheet;
+function getOrCreateSheet(spreadsheet, sheetName) {
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  if (sheet) {
+    return sheet;
   }
-
   return spreadsheet.insertSheet(sheetName);
 }
 
 /**
- * Clears and writes a 2D table to sheet with header formatting.
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {Array<Array<*>>} rows
+ * Записывает таблицу на лист.
  */
-function writeTable_(sheet, rows) {
-  const safeRows = rows.length > 0 ? rows : [['нет данных']];
-
+function writeTable(sheet, rows) {
   sheet.clearContents();
-  sheet.getRange(1, 1, safeRows.length, safeRows[0].length).setValues(safeRows);
-  sheet.getRange(1, 1, 1, safeRows[0].length).setFontWeight('bold');
+  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+  sheet.getRange(1, 1, 1, rows[0].length).setFontWeight('bold');
   sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, safeRows[0].length);
+  sheet.autoResizeColumns(1, rows[0].length);
 }
