@@ -25,6 +25,7 @@ function buildSingleDealCompaniesReport() {
   }
 
   var idxDeal = headers.indexOf('Название сделки');
+  var idxCompanyCol = headers.indexOf('Компания');
   var idxBudget = headers.indexOf('Бюджет');
   var idxStage = headers.indexOf('Этап сделки');
   var idxOpen = headers.indexOf('Дата создания');
@@ -38,6 +39,7 @@ function buildSingleDealCompaniesReport() {
 
   var contactIndexes = getContactIndexes_(headers);
   var companyCounts = {};
+  var companyDisplayByKey = {};
   var companyByProjectKey = {};
   var projectCompanyCounts = {};
   var prepared = [];
@@ -47,18 +49,27 @@ function buildSingleDealCompaniesReport() {
     var row = data[i];
     var dealName = row[idxDeal];
     var companyName = extractCompanyNameFromDeal_(dealName);
+    if (companyName === NO_COMPANY_LABEL && idxCompanyCol >= 0) {
+      companyName = normalizeCompanyName_(row[idxCompanyCol]) || NO_COMPANY_LABEL;
+    }
+    var companyKey = buildCompanyKey_(companyName);
     var projectKey = extractProjectKey_(dealName);
 
-    if (projectKey && companyName !== NO_COMPANY_LABEL) {
+    if (companyKey !== NO_COMPANY_LABEL && !companyDisplayByKey[companyKey]) {
+      companyDisplayByKey[companyKey] = companyName;
+    }
+
+    if (projectKey && companyKey !== NO_COMPANY_LABEL) {
       if (!projectCompanyCounts[projectKey]) {
         projectCompanyCounts[projectKey] = {};
       }
-      projectCompanyCounts[projectKey][companyName] = (projectCompanyCounts[projectKey][companyName] || 0) + 1;
+      projectCompanyCounts[projectKey][companyKey] = (projectCompanyCounts[projectKey][companyKey] || 0) + 1;
     }
 
     prepared.push({
       row: row,
       companyName: companyName,
+      companyKey: companyKey,
       projectKey: projectKey,
     });
   }
@@ -86,14 +97,15 @@ function buildSingleDealCompaniesReport() {
   // Final company assignment + counting.
   for (i = 0; i < prepared.length; i++) {
     if (
-      prepared[i].companyName === NO_COMPANY_LABEL &&
+      prepared[i].companyKey === NO_COMPANY_LABEL &&
       prepared[i].projectKey &&
       companyByProjectKey[prepared[i].projectKey]
     ) {
-      prepared[i].companyName = companyByProjectKey[prepared[i].projectKey];
+      prepared[i].companyKey = companyByProjectKey[prepared[i].projectKey];
+      prepared[i].companyName = companyDisplayByKey[prepared[i].companyKey] || prepared[i].companyName;
     }
 
-    companyCounts[prepared[i].companyName] = (companyCounts[prepared[i].companyName] || 0) + 1;
+    companyCounts[prepared[i].companyKey] = (companyCounts[prepared[i].companyKey] || 0) + 1;
   }
 
   var outHeaders = ['Название сделки', 'Бюджет', 'Этап сделки', 'Дата открытия', 'Дата закрытия'];
@@ -103,7 +115,7 @@ function buildSingleDealCompaniesReport() {
 
   var outRows = [outHeaders];
   for (i = 0; i < prepared.length; i++) {
-    if (companyCounts[prepared[i].companyName] !== 1) {
+    if (companyCounts[prepared[i].companyKey] !== 1) {
       continue;
     }
 
@@ -276,6 +288,22 @@ function extractProjectKey_(dealName) {
   }
 
   return firstToken;
+}
+
+function buildCompanyKey_(companyName) {
+  var text = String(companyName || '').trim();
+  if (!text || text === NO_COMPANY_LABEL) {
+    return NO_COMPANY_LABEL;
+  }
+
+  var key = String(text)
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"']/g, '')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return key || NO_COMPANY_LABEL;
 }
 
 function isCodeToken_(token) {
